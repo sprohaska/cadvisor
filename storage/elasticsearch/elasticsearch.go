@@ -44,8 +44,11 @@ type flatStats struct {
 	MachineName   string          `json:"machine_name,omitempty"`
 	ContainerName string          `json:"container_name,omitempty"`
 	Cpu           *info.CpuStats  `json:"cpu,omitempty"`
-	TaskStats     *info.LoadStats `json:"task_stats,omitempty"`
-	// Fields from info.DiskIoStats inlined:
+	TaskStats     *info.LoadStats `json:"tasks,omitempty"`
+	// Non-array fields from Network inlined.
+	Tcp  *info.TcpStat `json:"tcp,omitempty"`
+	Tcp6 *info.TcpStat `json:"tcp6,omitempty"`
+	// Fields from info.DiskIoStats inlined.
 	IoServiceBytes *info.PerDiskStats `json:"io_service_bytes,omitempty"`
 	IoServiced     *info.PerDiskStats `json:"io_serviced,omitempty"`
 	IoQueued       *info.PerDiskStats `json:"io_queued,omitempty"`
@@ -55,9 +58,10 @@ type flatStats struct {
 	IoMerged       *info.PerDiskStats `json:"io_merged,omitempty"`
 	IoTime         *info.PerDiskStats `json:"io_time,omitempty"`
 	// MemoryStats is flat enough; it does not contain arrays.
-	Memory     *info.MemoryStats  `json:"memory,omitempty"`
-	Network    *info.NetworkStats `json:"network,omitempty"`
-	Filesystem *info.FsStats      `json:"filesystem,omitempty"`
+	Memory *info.MemoryStats `json:"memory,omitempty"`
+	// Array elements from Network are flattened into Interface.
+	Interface  *info.InterfaceStats `json:"interface,omitempty"`
+	Filesystem *info.FsStats        `json:"filesystem,omitempty"`
 }
 
 var (
@@ -102,17 +106,9 @@ func (self *elasticStorage) flatContainerStats(
 		f := base
 		f.Cpu = &stats.Cpu
 		f.Memory = &stats.Memory
-		if len(stats.Network.Name) > 0 {
-			// Copy so that we can nil the Interfaces.
-			f.Network = &info.NetworkStats{}
-			*f.Network = stats.Network
-			// Keep only the main interface and drop the array, since
-			// Kibana cannot handle it anyway.  XXX The array should
-			// perhaps be flattened.  But it wasn't immediately obvious
-			// whether the content of the array is useful.
-			f.Network.Interfaces = nil
-		}
 		f.TaskStats = &stats.TaskStats
+		f.Tcp = &stats.Network.Tcp
+		f.Tcp6 = &stats.Network.Tcp6
 		flats = append(flats, &f)
 	}
 
@@ -155,6 +151,12 @@ func (self *elasticStorage) flatContainerStats(
 	for _, s := range stats.DiskIo.IoTime {
 		f := base
 		f.IoTime = &s
+		flats = append(flats, &f)
+	}
+
+	for _, s := range stats.Network.Interfaces {
+		f := base
+		f.Interface = &s
 		flats = append(flats, &f)
 	}
 
