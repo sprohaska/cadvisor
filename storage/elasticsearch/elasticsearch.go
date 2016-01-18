@@ -39,11 +39,25 @@ type elasticStorage struct {
 	lock        sync.Mutex
 }
 
-type detailSpec struct {
-	Timestamp      int64                `json:"timestamp"`
-	MachineName    string               `json:"machine_name,omitempty"`
-	ContainerName  string               `json:"container_Name,omitempty"`
-	ContainerStats *info.ContainerStats `json:"container_stats,omitempty"`
+type flatStats struct {
+	Timestamp     time.Time       `json:"timestamp"`
+	MachineName   string          `json:"machine_name,omitempty"`
+	ContainerName string          `json:"container_name,omitempty"`
+	Cpu           *info.CpuStats  `json:"cpu,omitempty"`
+	TaskStats     *info.LoadStats `json:"task_stats,omitempty"`
+	// Fields from info.DiskIoStats inlined:
+	IoServiceBytes *info.PerDiskStats `json:"io_service_bytes,omitempty"`
+	IoServiced     *info.PerDiskStats `json:"io_serviced,omitempty"`
+	IoQueued       *info.PerDiskStats `json:"io_queued,omitempty"`
+	Sectors        *info.PerDiskStats `json:"sectors,omitempty"`
+	IoServiceTime  *info.PerDiskStats `json:"io_service_time,omitempty"`
+	IoWaitTime     *info.PerDiskStats `json:"io_wait_time,omitempty"`
+	IoMerged       *info.PerDiskStats `json:"io_merged,omitempty"`
+	IoTime         *info.PerDiskStats `json:"io_time,omitempty"`
+	// MemoryStats is flat enough; it does not contain arrays.
+	Memory     *info.MemoryStats  `json:"memory,omitempty"`
+	Network    *info.NetworkStats `json:"network,omitempty"`
+	Filesystem *info.FsStats      `json:"filesystem,omitempty"`
 }
 
 var (
@@ -67,22 +81,90 @@ func new() (storage.StorageDriver, error) {
 	)
 }
 
-func (self *elasticStorage) containerStatsAndDefaultValues(
-	ref info.ContainerReference, stats *info.ContainerStats) *detailSpec {
-	timestamp := stats.Timestamp.UnixNano() / 1E3
+func (self *elasticStorage) flatContainerStats(
+	ref info.ContainerReference, stats *info.ContainerStats) []*flatStats {
 	var containerName string
 	if len(ref.Aliases) > 0 {
 		containerName = ref.Aliases[0]
 	} else {
 		containerName = ref.Name
 	}
-	detail := &detailSpec{
-		Timestamp:      timestamp,
-		MachineName:    self.machineName,
-		ContainerName:  containerName,
-		ContainerStats: stats,
+
+	base := flatStats{
+		Timestamp:     stats.Timestamp,
+		MachineName:   self.machineName,
+		ContainerName: containerName,
 	}
-	return detail
+	flats := make([]*flatStats, 0)
+
+	// Base stats.
+	{
+		f := base
+		f.Cpu = &stats.Cpu
+		f.Memory = &stats.Memory
+		if len(stats.Network.Name) > 0 {
+			// Copy so that we can nil the Interfaces.
+			f.Network = &info.NetworkStats{}
+			*f.Network = stats.Network
+			// Keep only the main interface and drop the array, since
+			// Kibana cannot handle it anyway.  XXX The array should
+			// perhaps be flattened.  But it wasn't immediately obvious
+			// whether the content of the array is useful.
+			f.Network.Interfaces = nil
+		}
+		f.TaskStats = &stats.TaskStats
+		flats = append(flats, &f)
+	}
+
+	// Fields from info.DiskIoStats.
+	for _, s := range stats.DiskIo.IoServiceBytes {
+		f := base
+		f.IoServiceBytes = &s
+		flats = append(flats, &f)
+	}
+	for _, s := range stats.DiskIo.IoServiced {
+		f := base
+		f.IoServiced = &s
+		flats = append(flats, &f)
+	}
+	for _, s := range stats.DiskIo.IoQueued {
+		f := base
+		f.IoQueued = &s
+		flats = append(flats, &f)
+	}
+	for _, s := range stats.DiskIo.Sectors {
+		f := base
+		f.Sectors = &s
+		flats = append(flats, &f)
+	}
+	for _, s := range stats.DiskIo.IoServiceTime {
+		f := base
+		f.IoServiceTime = &s
+		flats = append(flats, &f)
+	}
+	for _, s := range stats.DiskIo.IoWaitTime {
+		f := base
+		f.IoWaitTime = &s
+		flats = append(flats, &f)
+	}
+	for _, s := range stats.DiskIo.IoMerged {
+		f := base
+		f.IoMerged = &s
+		flats = append(flats, &f)
+	}
+	for _, s := range stats.DiskIo.IoTime {
+		f := base
+		f.IoTime = &s
+		flats = append(flats, &f)
+	}
+
+	for _, s := range stats.Filesystem {
+		f := base
+		f.Filesystem = &s
+		flats = append(flats, &f)
+	}
+
+	return flats
 }
 
 func (self *elasticStorage) AddStats(ref info.ContainerReference, stats *info.ContainerStats) error {
@@ -93,18 +175,20 @@ func (self *elasticStorage) AddStats(ref info.ContainerReference, stats *info.Co
 		// AddStats will be invoked simultaneously from multiple threads and only one of them will perform a write.
 		self.lock.Lock()
 		defer self.lock.Unlock()
-		// Add some default params based on ContainerStats
-		detail := self.containerStatsAndDefaultValues(ref, stats)
-		// Index a cadvisor (using JSON serialization)
-		_, err := self.client.Index().
-			Index(self.indexName).
-			Type(self.typeName).
-			BodyJson(detail).
-			Do()
-		if err != nil {
-			// Handle error
-			fmt.Printf("failed to write stats to ElasticSearch - %s", err)
-			return
+		// Flatten the stats into multiple entries to avoid arrays of
+		// objects, which Kibana 4 cannot handle.
+		flats := self.flatContainerStats(ref, stats)
+		for _, f := range flats {
+			_, err := self.client.Index().
+				Index(self.indexName).
+				Type(self.typeName).
+				BodyJson(f).
+				Do()
+			if err != nil {
+				// Handle error
+				fmt.Printf("failed to write stats to ElasticSearch - %s", err)
+				return
+			}
 		}
 	}()
 	return nil
