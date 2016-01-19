@@ -66,7 +66,7 @@ type flatStats struct {
 
 var (
 	argElasticHost   = flag.String("storage_driver_es_host", "http://localhost:9200", "ElasticSearch host:port")
-	argIndexName     = flag.String("storage_driver_es_index", "cadvisor", "ElasticSearch index name")
+	argIndexName     = flag.String("storage_driver_es_index", "", "ElasticSearch index name (default: cadvisor-YYYY.MM.DD)")
 	argTypeName      = flag.String("storage_driver_es_type", "stats", "ElasticSearch type name")
 	argEnableSniffer = flag.Bool("storage_driver_es_enable_sniffer", false, "ElasticSearch uses a sniffing process to find all nodes of your cluster by default, automatically")
 )
@@ -180,9 +180,16 @@ func (self *elasticStorage) AddStats(ref info.ContainerReference, stats *info.Co
 		// Flatten the stats into multiple entries to avoid arrays of
 		// objects, which Kibana 4 cannot handle.
 		flats := self.flatContainerStats(ref, stats)
+
+		// Use the default index name if the arg is empty.
+		indexName := self.indexName
+		if len(indexName) == 0 {
+			indexName = "cadvisor-" + stats.Timestamp.Format("2006.01.02")
+		}
+
 		for _, f := range flats {
 			_, err := self.client.Index().
-				Index(self.indexName).
+				Index(indexName).
 				Type(self.typeName).
 				BodyJson(f).
 				Do()
