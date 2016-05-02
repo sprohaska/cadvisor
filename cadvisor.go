@@ -76,10 +76,6 @@ func (ml *metricSetValue) String() string {
 }
 
 func (ml *metricSetValue) Set(value string) error {
-	ignoreMetrics = metricSetValue{}
-	if value == "" {
-		return nil
-	}
 	for _, metric := range strings.Split(value, ",") {
 		if ignoreWhitelist.Has(container.MetricKind(metric)) {
 			(*ml).Add(container.MetricKind(metric))
